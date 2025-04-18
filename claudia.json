@@ -1,7 +1,8 @@
 {
   "lambda": {
-    "role": "weather-text-executor",
+    "role": "arn:aws:iam::483579223212:role/weather-text-executor",
     "name": "weather-text",
-    "region": "us-east-1"
+    "region": "us-west-1",
+    "sharedRole": true
   }
 }
