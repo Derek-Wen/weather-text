@@ -68,4 +68,4 @@ export WT_TWILIO_TO=<VALUE>
 
 ## Contributions
 - This is a very small project, but PRs are welcome!
-- Reach out to me at `@AndrewEvans0102` on [twitter](https://twitter.com/andrewevans0102) anytime!
+- Original Repository by `@AndrewEvans0102` on [twitter](https://twitter.com/andrewevans0102)
