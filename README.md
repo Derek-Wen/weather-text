@@ -1,71 +1,105 @@
-# duck-weather
+# weather-text
 
-This project uses an AWS Lambda to send a text message with the current weather.
+This project uses an AWS Lambda function to fetch current weather data, store it in a MySQL RDS database, and send a detailed weather forecast email via Amazon SES using Nodemailer.
 
 Here's the process flow:
 
-![flow chart](https://github.com/andrewevans0102/weather-text/blob/master/images/duck-weather.png)
+![flow chart](images/duck-weather.png)
 
-1. Lambda is triggered by a [CloudWatch](https://aws.amazon.com/cloudwatch/) scheduled cron job
-2. Lambda calls the [OpenWeatherMap API](https://openweathermap.org/api) for current conditions
-3. Lambda calls the [NOAA API](https://www.weather.gov/documentation/services-web-api) for forecast data
-4. A message is created with all of the content
-5. A text message is sent via [Twilio's APIs](https://www.twilio.com/)
+1. Lambda is triggered on a schedule by a CloudWatch/EventBridge rule.  
+2. Lambda calls the OpenWeatherMap API for current conditions.  
+3. Lambda calls the NOAA API for forecast data (weekly and hourly).  
+4. Lambda saves the processed weather data into a MySQL RDS instance.  
+5. Lambda constructs and sends a personalized forecast email via Amazon SES.
 
-## AWS CLI
-- Before running your own version of this project, please create an AWS account and setup the CLI.
-- Go [here to get started](https://aws.amazon.com/cli/)
+## Prerequisites
 
-## ClaudiaJS
-- This project uses ClaudiaJS to generate the AWS lambda
-- Checkout the tutorial here https://claudiajs.com/tutorials/hello-world-lambda.html
-
-## OpenWeatherMap API
-- In order to get the current weather I used the OpenWeatherMap API.  The weather service is free, but you still need to register to create an API Key.
-- Go [here to get started](https://openweathermap.org/api)
-
-## NOAA APIs
-- In order to get the weather forecast, I used NOAAs APIs.  These are free and open to the public.
-- Go [here to get started](https://www.weather.gov/documentation/services-web-api)
+- **AWS Account & CLI**: Set up an AWS account and install/configure the AWS CLI.  
+- **Node.js & npm**: Install Node.js (v14+) and npm on your local machine.  
+- **ClaudiaJS CLI**: Install globally with:
+  ```bash
+  npm install -g claudia
+  ```
+- **MySQL RDS Instance**: Create a MySQL RDS database and configure security groups to allow Lambda access on port 3306.  
+- **SES Setup**: Verify sender and recipient emails in Amazon SES.
 
 ## Environment Variables
-- This lambda uses several environment variables to do its work
-- `OPEN_WEATHER_MAP_API_KEY` = the registration key for an OpenWeatherMAPAPI account
-- `LATITUDE` = the Latitude of the location you want to get the forecast of
-- `LONGITUDE` = the Longitude of the location you want to get the forecast of
-- `TWILIO_ACCOUNT_SID` = the SID of a Twilio account for sending text messages
-- `TWILIO_AUTH_TOKEN` = the auth token of a Twilio account for sending text messages
-- `TWILIO_FROM` = the phone number that is to be used with the Twilio account for sending text messages
-- `TWILIO_TO` = the phone number you want to send a text message to
-- In order to easily setup these values, please fill out the corresponding `<VALUE>` and paste this at the bottom of your terminal's bash_profile (or other associated shell)
-```bash
-# weather-text
-export WT_OPEN_WEATHER_MAP_API_KEY=<VALUE>
-export WT_LATITUDE=<VALUE>
-export WT_LONGITUDE=<VALUE>
-export WT_TWILIO_ACCOUNT_SID=<VALUE>
-export WT_TWILIO_AUTH_TOKEN=<VALUE>
-export WT_TWILIO_FROM=<VALUE>
-export WT_TWILIO_TO=<VALUE>
+
+Store sensitive values in a local `.env` file (and in your Lambda configuration) with the following keys:
+
+```ini
+# Weather APIs
+OPEN_WEATHER_MAP_API_KEY=<Your_OpenWeatherMap_API_Key>
+LATITUDE=<Latitude>
+LONGITUDE=<Longitude>
+
+# Email (SES)
+SENDER_EMAIL=<Verified_SES_Sender_Email>
+RECIPIENT_EMAIL=<Verified_SES_Recipient_Email>
+
+# MySQL RDS
+DB_HOST=<RDS_Endpoint>
+DB_USER=<DB_Username>
+DB_PASSWORD=<DB_Password>
+DB_NAME=<Database_Name>
+DB_PORT=3306
 ```
 
-## NPM scripts
-- This project has `npm scripts` that will enable you to get up and running without a problem
-- `create-lambda` uses the ClaudiaJS CLI and the AWS CLI to create a lambda in the AWS account on your machine
-- `update-lambda` uses the ClaudiaJS CLI to provision your Lambda with the environment variables mentioned above
-- `local-test` enables you to call your lambda from your local terminal
+Ensure your `.gitignore` includes these entries:
+```
+.env
+node_modules/
+```
 
-## TO RUN THIS LOCALLY
-- Create an OpenWeatherMap API account and get a key
-- Create an AWS account and setup the CLI on your local machine (the account gives you a free year of services)
-- Install the ClaudiaJS CLI on your local machine
-- Create a trial account with Twilio (it is free and you get a starting credit)
-- Setup the Environment variables in the `npm script` that I mentioned above
-- Run the `create-lambda` script to create the lambda in AWS
-- Run the `update-lambda` script to update the Lambda with the environment Variables
-- Run the `local-test` script to see it in action (and test it on a phone number of your choice)
-- and tada! 🎉 🎉 🎉 🎉   It should be working!
+## NPM Scripts
 
-## Contributions
-- This is a very small project, but PRs are welcome!
-- Original Repository by `@AndrewEvans0102` on [twitter](https://twitter.com/andrewevans0102)
+In `package.json`, the following scripts simplify deployment and testing:
+
+- **create-lambda**: Deploys a new Lambda:
+  ```bash
+  npm run create-lambda
+  ```
+- **update-lambda**: Updates environment variables on an existing Lambda:
+  ```bash
+  npm run update-lambda
+  ```
+- **local-test**: Invokes the Lambda locally via ClaudiaJS:
+  ```bash
+  npm run local-test
+  ```
+
+## Setup & Run Locally
+
+1. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+2. **Configure `.env`** with your values.  
+3. **Create Lambda** (first time only):
+   ```bash
+   npm run create-lambda
+   ```
+4. **Deploy updates** after code changes:
+   ```bash
+   npm run update-lambda
+   ```
+5. **Test locally**:
+   ```bash
+   npm run local-test
+   ```
+
+## Scheduling
+
+A CloudWatch/EventBridge rule triggers this Lambda on your desired cron schedule (e.g., daily at 8:00 AM PST), ensuring automatic daily weather updates.
+
+## Monitoring & Logs
+
+- **CloudWatch Logs**: View logs under `/aws/lambda/weather-text` for detailed execution traces.  
+- **CloudWatch Alarms**: (Optional) Configure alarms on errors or high execution duration.
+
+## Contributing
+
+Feel free to open issues or pull requests. For major changes, please discuss them first via GitHub issues.
+
+---
+*Originally based on a project by @andrewevans0102, adapted by Derek Wen.*
