@@ -1,179 +1,124 @@
+// lambda.js
+
 const axios = require("axios");
-const AWS = require('aws-sdk');
-const nodemailer = require('nodemailer');
-
-
+const AWS = require("aws-sdk");
+const nodemailer = require("nodemailer");
+const { format, fromUnixTime, subHours } = require("date-fns");
 
 /**
- * Helper method that formats a UNIX time into a "HH:MM" string.
- * Adjusts for Eastern Standard Time (subtracts 4 hours).
+ * Formats a UNIX timestamp (seconds) into "HH:mm" (12-hour) after shifting by 4 hours (EST adjustment).
  */
-function formatTime(time) {
-  const zeroTime = new Date(0);
-  zeroTime.setUTCSeconds(time);
-  let minutes = String(zeroTime.getUTCMinutes());
-  if (minutes.length < 2) {
-    minutes = "0" + minutes;
-  }
-  let hours = String(zeroTime.getUTCHours() - 4);
-  if (hours > 12) {
-    hours = hours - 12;
-  }
-  if (hours.length < 2) {
-    hours = "0" + hours;
-  }
-  return hours + ":" + minutes;
+function formatUnixTimeToHHMM(timestamp) {
+  // fromUnixTime expects seconds; subHours shifts the time zone
+  return format(subHours(fromUnixTime(timestamp), 4), "hh:mm");
 }
 
 /**
- * Retrieves the hourly forecast periods specific to today from the NOAA API.
+ * Retrieves only today’s hourly periods from the NOAA API using date-fns for date formatting.
  */
-function retrieveHours(periods) {
-  const today = new Date();
-  const monthNumber = today.getMonth() + 1;
-  let monthString = monthNumber.toString();
-  if (monthString.length === 1) {
-    monthString = "0" + monthString;
-  }
-  let dayString = today.getDate().toString();
-  if (dayString.length === 1) {
-    dayString = "0" + dayString;
-  }
-  const timePrefix = today.getFullYear() + "-" + monthString + "-" + dayString;
-  return periods.filter(
-    period => period.startTime.toString().includes(timePrefix)
-  );
+function retrieveTodayHours(periods) {
+  const todayPrefix = format(new Date(), "yyyy-MM-dd");
+  return periods.filter(({ startTime }) => startTime.startsWith(todayPrefix));
 }
 
-/**
- * Lambda handler: Fetches weather data from OpenWeatherMap and NOAA,
- * constructs a minimal weather message, and sends it as an email via Amazon SES.
- */
-exports.handler = async function(event, context) {
-  const APIKey = process.env.OPEN_WEATHER_MAP_API_KEY;
-  const latitude = process.env.LATITUDE;
-  const longitude = process.env.LONGITUDE;
+exports.handler = async function (event, context) {
+  const {
+    OPEN_WEATHER_MAP_API_KEY: APIKey,
+    LATITUDE: latitude,
+    LONGITUDE: longitude,
+    SENDER_EMAIL,
+    RECIPIENT_EMAIL,
+    AWS_REGION,
+  } = process.env;
   const units = "imperial";
 
-  console.log("Lambda env vars:", {
-    OPEN_WEATHER_MAP_API_KEY: process.env.OPEN_WEATHER_MAP_API_KEY,
-    LATITUDE: process.env.LATITUDE,
-    LONGITUDE: process.env.LONGITUDE,
-    SENDER_EMAIL: process.env.SENDER_EMAIL,
-    RECIPIENT_EMAIL: process.env.RECIPIENT_EMAIL
-  });
+  console.log("Lambda env vars:", { APIKey, latitude, longitude, SENDER_EMAIL, RECIPIENT_EMAIL });
 
-  // Fetch current weather from OpenWeatherMap
-  const openWeatherMapAPIURL = `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&units=${units}&appid=${APIKey}`;
-  const currentWeather = await axios.get(openWeatherMapAPIURL).catch(error => {
-    console.log("Error fetching current weather:", error);
-    return;
-  });
+  // Fetch data
+  const [currentWeatherRes, metaRes] = await Promise.all([
+    axios.get(
+      `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&units=${units}&appid=${APIKey}`
+    ),
+    axios.get(`https://api.weather.gov/points/${latitude},${longitude}`),
+  ]);
 
-  // Fetch NOAA Metadata for forecast endpoints
-  const NOAAMetadata = await axios
-    .get(`https://api.weather.gov/points/${latitude},${longitude}`)
-    .catch(error => {
-      console.log("Error fetching NOAA metadata:", error);
-      return;
-    });
+  const [{ data: currentWeather }, { data: meta }] = [currentWeatherRes, metaRes];
 
-  // Fetch NOAA Weekly Forecast
-  const NOAAWeeklyForecast = await axios
-    .get(NOAAMetadata.data.properties.forecast)
-    .catch(error => {
-      console.log("Error fetching NOAA weekly forecast:", error);
-      return;
-    });
+  const [weeklyRes, hourlyRes] = await Promise.all([
+    axios.get(meta.properties.forecast),
+    axios.get(meta.properties.forecastHourly),
+  ]);
+  const weeklyPeriods = weeklyRes.data.properties.periods;
+  const hourlyPeriods = hourlyRes.data.properties.periods;
 
-  // Fetch NOAA Hourly Forecast
-  const NOAAHourlyForecast = await axios
-    .get(NOAAMetadata.data.properties.forecastHourly)
-    .catch(error => {
-      console.log("Error fetching NOAA hourly forecast:", error);
-      return;
-    });
+  // Extract today's hours
+  const hoursToday = retrieveTodayHours(hourlyPeriods);
 
-  const hoursToday = retrieveHours(NOAAHourlyForecast.data.properties.periods);
+  // Compute high & low in one line each
+  const temps = hoursToday.map((p) => Number(p.temperature));
+  const highTemp = Math.max(...temps);
+  const lowTemp = Math.min(...temps);
 
-  let highTemp = 0;
-  hoursToday.forEach(period => {
-    if (parseInt(period.temperature) > highTemp) {
-      highTemp = period.temperature;
-    }
-  });
+  // Format sunrise/sunset
+  const sunrise = formatUnixTimeToHHMM(currentWeather.sys.sunrise);
+  const sunset  = formatUnixTimeToHHMM(currentWeather.sys.sunset);
 
-  let lowTemp = highTemp;
-  hoursToday.forEach(period => {
-    if (parseInt(period.temperature) < lowTemp) {
-      lowTemp = period.temperature;
-    }
-  });
-
-  const sunrise = formatTime(currentWeather.data.sys.sunrise);
-  const sunset = formatTime(currentWeather.data.sys.sunset);
-
-  // Example weatherInfo object constructed from your API responses
   const weatherInfo = {
-    currentTemp: currentWeather.data.main.temp,  // from OpenWeatherMap
-    highTemp: highTemp,                          // computed from NOAA hourly data
-    lowTemp: lowTemp,                            // computed from NOAA hourly data
-    windSpeed: currentWeather.data.wind.speed,   // from OpenWeatherMap
-    sunrise: formatTime(currentWeather.data.sys.sunrise),
-    sunset: formatTime(currentWeather.data.sys.sunset),
-    forecast: NOAAWeeklyForecast.data.properties.periods[0].detailedForecast
+    currentTemp: currentWeather.main.temp,
+    highTemp,
+    lowTemp,
+    windSpeed: currentWeather.wind.speed,
+    sunrise,
+    sunset,
+    forecast: weeklyPeriods[0].detailedForecast,
   };
-  
-  // Save data to MySQL RDS
+
+  // Persist to RDS
   await saveWeatherData(weatherInfo);
 
-  const message =
-    "WEATHER-TEXT DEREK WEN:\n" +
-    "\n" +
-    "Good Morning!  ☀️ 🌤 ⛈ \n" +
-    "Here's the summary for today...\n" +
-    "\n" +
-    `Temperature: ${currentWeather.data.main.temp.toFixed(0)}°\n` +
-    `High: ${highTemp.toString()}°\n` +
-    `Low: ${lowTemp.toString()}°\n` +
-    `Wind: ${currentWeather.data.wind.speed.toFixed(0)} MPH\n` +
-    `Sunrise: ${sunrise} AM\n` +
-    `Sunset: ${sunset} PM\n` +
-    "\n" +
-    `Forecast: ${NOAAWeeklyForecast.data.properties.periods[0].detailedForecast}\n` +
-    "\n" +
-    "Have a good day! 🎉🎉 🎉 🎉";
+  // Build message
+  const message = [
+    "WEATHER-TEXT DEREK WEN:",
+    "",
+    "Good Morning! ☀️🌤⛈",
+    "Here's the summary for today...",
+    "",
+    `Temperature: ${weatherInfo.currentTemp.toFixed(0)}°`,
+    `High: ${highTemp}°`,
+    `Low: ${lowTemp}°`,
+    `Wind: ${weatherInfo.windSpeed.toFixed(0)} MPH`,
+    `Sunrise: ${sunrise} AM`,
+    `Sunset: ${sunset} PM`,
+    "",
+    `Forecast: ${weatherInfo.forecast}`,
+    "",
+    "Have a good day! 🎉🎉🎉",
+  ].join("\n");
 
-  // --- EMAIL SENDING VIA AMAZON SES USING NODEMAILER ---
-  AWS.config.update({ region: process.env.AWS_REGION || 'us-west-1' });
-  const ses = new AWS.SES({ apiVersion: '2010-12-01' });
+  // Send email via SES
+  AWS.config.update({ region: AWS_REGION || "us-west-1" });
+  const ses = new AWS.SES({ apiVersion: "2010-12-01" });
   const transporter = nodemailer.createTransport({ SES: { ses, aws: AWS } });
-  
   const mailOptions = {
-    from: process.env.SENDER_EMAIL,
-    to: process.env.RECIPIENT_EMAIL,
-    subject: 'Weather Forecast',
-    text: message
+    from: SENDER_EMAIL,
+    to: RECIPIENT_EMAIL,
+    subject: "Weather Forecast",
+    text: message,
   };
 
-  let response = "lambda completed with ";
   try {
     const info = await transporter.sendMail(mailOptions);
     console.log("Email sent:", info);
-    response += "success";
-  } catch (error) {
-    console.error("Error sending email:", error);
-    response += " error: " + error.message;
-  } 
-  return response;
-}
+    return "lambda completed with success";
+  } catch (err) {
+    console.error("Error sending email:", err);
+    return `lambda completed with error: ${err.message}`;
+  }
+};
 
-
-const mysql = require('mysql2/promise');
-
-async function saveWeatherData(weatherInfo) {
-  const dbPassword = process.env.DB_PASSWOR || process.env.DB_PASSWORD;
-  
+const mysql = require("mysql2/promise");
+async function saveWeatherData({ currentTemp, highTemp, lowTemp, windSpeed, sunrise, sunset, forecast }) {
+  const dbPassword = process.env.DB_PASSWORD || process.env.DB_PASSWOR;
   let connection;
   try {
     connection = await mysql.createConnection({
@@ -181,32 +126,28 @@ async function saveWeatherData(weatherInfo) {
       port: process.env.DB_PORT,
       user: process.env.DB_USER,
       password: dbPassword,
-      database: process.env.DB_NAME
+      database: process.env.DB_NAME,
     });
-    
-    // Prepare the INSERT query.
+
     const sql = `
-      INSERT INTO weather_data (temperature, high, low, wind_speed, sunrise, sunset, forecast)
+      INSERT INTO weather_data
+        (temperature, high, low, wind_speed, sunrise, sunset, forecast)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
     const values = [
-      Math.round(weatherInfo.currentTemp),  // current temperature
-      weatherInfo.highTemp,                  // high of day
-      weatherInfo.lowTemp,                   // low of day
-      Math.round(weatherInfo.windSpeed),     // wind speed
-      weatherInfo.sunrise,                   // sunrise time (formatted)
-      weatherInfo.sunset,                    // sunset time (formatted)
-      weatherInfo.forecast                   // detailed forecast text
+      Math.round(currentTemp),
+      highTemp,
+      lowTemp,
+      Math.round(windSpeed),
+      sunrise,
+      sunset,
+      forecast,
     ];
-    
-    // Execute the insertion
     await connection.execute(sql, values);
-    console.log('Weather data inserted successfully.');
-  } catch (error) {
-    console.error('Error saving weather data:', error);
+    console.log("Weather data inserted successfully.");
+  } catch (err) {
+    console.error("Error saving weather data:", err);
   } finally {
-    if (connection) {
-      await connection.end();
-    }
+    if (connection) await connection.end();
   }
 }
